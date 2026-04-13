@@ -2,7 +2,7 @@
 webview_power_state = "on"       # "on" / "off" — перед ревью Apple ставь "off"
 
 # Тумблер для фильтра
-use_hideclick = True       # "True" / "False" — включить или выключить фильтр
+use_hideclick = False       # "True" / "False" — включить или выключить фильтр
 
 # Оффер
 offer_url = "https://www.google.com/"
