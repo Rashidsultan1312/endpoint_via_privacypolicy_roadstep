@@ -1,5 +1,6 @@
 import socket
 import json
+import time
 from pathlib import Path
 import httpx
 from urllib.parse import urlencode
@@ -15,8 +16,47 @@ app = FastAPI()
 BASE_DIR = Path(__file__).resolve().parent
 POLICY_DIR = BASE_DIR / "PrivacyPolicy"
 
+_IOS_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+)
+
+_OFFER_CACHE_TTL = 60
+_offer_cache: dict[str, tuple[float, bool, int]] = {}
+
+
 def is_webview_enabled() -> bool:
     return cfg.webview_power_state.strip().lower() == "on"
+
+
+async def is_offer_alive(url: str) -> bool:
+    if not url:
+        return False
+
+    now = time.time()
+    cached = _offer_cache.get(url)
+    if cached and now - cached[0] < _OFFER_CACHE_TTL:
+        print(f"[offer-check] cache hit: {url} alive={cached[1]} status={cached[2]}")
+        return cached[1]
+
+    status = 0
+    alive = False
+    try:
+        async with httpx.AsyncClient(
+            timeout=5,
+            follow_redirects=True,
+            headers={"User-Agent": _IOS_UA, "Accept": "*/*"},
+        ) as client:
+            resp = await client.get(url)
+            status = resp.status_code
+            alive = status < 400
+    except Exception as e:
+        print(f"[offer-check] error for {url}: {e!r}")
+        alive = False
+
+    _offer_cache[url] = (now, alive, status)
+    print(f"[offer-check] fresh: {url} alive={alive} status={status}")
+    return alive
 
 
 def resolve_hideclick_host() -> str:
@@ -118,10 +158,16 @@ async def get_webview_target(request: Request) -> JSONResponse:
             "status": "webview_disabled",
         })
 
+    # если фильтр ВКЛЮЧЕН
     if cfg.use_hideclick:
         result = await check_hideclick(request)
 
         if result and result.get("action") == "allow":
+            if not await is_offer_alive(cfg.offer_url):
+                return JSONResponse(content={
+                    "enabled": False,
+                    "status": "offer_dead",
+                })
             return JSONResponse(content={
                 "enabled": True,
                 "status": "webview_enabled",
@@ -135,6 +181,11 @@ async def get_webview_target(request: Request) -> JSONResponse:
             "filter": result.get("action", "unknown") if result else "api_error",
         })
 
+    if not await is_offer_alive(cfg.offer_url):
+        return JSONResponse(content={
+            "enabled": False,
+            "status": "offer_dead",
+        })
     return JSONResponse(content={
         "enabled": True,
         "status": "webview_enabled",
